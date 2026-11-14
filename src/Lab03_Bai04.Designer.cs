@@ -237,7 +237,7 @@
             txtCustomerName.Name = "txtCustomerName";
             txtCustomerName.Size = new Size(329, 29);
             txtCustomerName.TabIndex = 0;
-            txtCustomerName.Click += txtCustomerName_Click;
+            //txtCustomerName.Click += txtCustomerName_Click;
             txtCustomerName.TextChanged += txtCustomerName_TextChanged;
             // 
             // label7

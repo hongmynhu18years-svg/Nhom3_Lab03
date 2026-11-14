@@ -132,217 +132,249 @@ namespace LAB03
         private void HandleClient(TcpClient client)
         {
             NetworkStream stream = client.GetStream();
-            byte[] buffer = new byte[1024 * 5000];
+            byte[] buffer = new byte[65536];
             string clientIP = client.Client.RemoteEndPoint.ToString();
 
             try
             {
-                int bytesRead;
-                while ((bytesRead = stream.Read(buffer, 0, buffer.Length)) != 0)
+                using (MemoryStream ms = new MemoryStream())
                 {
-                    string jsonReceived = Encoding.UTF8.GetString(buffer, 0, bytesRead);
-                    Lab03_Bai05_packet p = JsonSerializer.Deserialize<Lab03_Bai05_packet>(jsonReceived);
-
-                    string connectionString = "Data Source=data.db;Version=3;";
-
-                    lock (dbLock)
+                    int bytesRead;
+                    while ((bytesRead = stream.Read(buffer, 0, buffer.Length)) != 0)
                     {
-                        using (var conn = new SQLiteConnection(connectionString))
+                        // Gom từng mảnh dữ liệu TCP vào MemoryStream
+                        ms.Write(buffer, 0, bytesRead);
+
+                        string jsonReceived = Encoding.UTF8.GetString(ms.ToArray()).Trim();
+
+                        // Nếu chuỗi JSON chưa nhận đủ (chưa kết thúc bằng dấu '}'), tiếp tục đọc mảnh tiếp theo
+                        if (!jsonReceived.EndsWith("}"))
+                            continue;
+
+                        Lab03_Bai05_packet p = null;
+                        try
                         {
-                            conn.Open();
+                            p = JsonSerializer.Deserialize<Lab03_Bai05_packet>(jsonReceived);
+                        }
+                        catch (JsonException)
+                        {
+                            // Dữ liệu vẫn đang truyền dở, quay lại vòng lặp đọc tiếp
+                            continue;
+                        }
 
-                            if (p.Action == "ADD")
+                        // Đã nhận trọn vẹn gói tin, xóa bộ đệm tạm để sẵn sàng cho gói tiếp theo
+                        ms.SetLength(0);
+
+                        string connectionString = "Data Source=data.db;Version=3;";
+
+                        lock (dbLock)
+                        {
+                            using (var conn = new SQLiteConnection(connectionString))
                             {
-                                string checkSql = "SELECT COUNT(*) FROM MonAn WHERE LOWER(TenMonAn) = LOWER(@foodCheck)";
-                                using (var checkCmd = new SQLiteCommand(checkSql, conn))
-                                {
-                                    checkCmd.Parameters.AddWithValue("@foodCheck", p.TenMonAn?.Trim() ?? "");
-                                    long count = (long)checkCmd.ExecuteScalar();
+                                conn.Open();
 
-                                    if (count > 0)
+                                if (p.Action == "ADD")
+                                {
+                                    string checkSql = "SELECT COUNT(*) FROM MonAn WHERE LOWER(TenMonAn) = LOWER(@foodCheck)";
+                                    using (var checkCmd = new SQLiteCommand(checkSql, conn))
                                     {
-                                        Lab03_Bai05_packet errPacket = new Lab03_Bai05_packet { Action = "ERROR", TenMonAn = "Món ăn này đã tồn tại trong danh sách!" };
-                                        byte[] errBytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(errPacket));
-                                        stream.Write(errBytes, 0, errBytes.Length);
+                                        checkCmd.Parameters.AddWithValue("@foodCheck", p.TenMonAn?.Trim() ?? "");
+                                        long count = (long)checkCmd.ExecuteScalar();
 
-                                        Invoke(new Action(() => Rtb_log.AppendText($"Từ chối món trùng: {p.TenMonAn}\n")));
-                                        continue;
-                                    }
-                                }
-
-                                string tenNguoiDung = string.IsNullOrWhiteSpace(p.NguoiDongGop) ? "Quản lý quán" : p.NguoiDongGop;
-                                Invoke(new Action(() => Rtb_log.AppendText($"Yêu cầu THÊM MÓN từ {tenNguoiDung} (IP: {clientIP})\n")));
-
-                                string fileName = ""; // KHỞI TẠO BIẾN fileName ĐỂ TRÁNH LỖI CS0103
-                                if (!string.IsNullOrEmpty(p.HinhAnhBase64))
-                                {
-                                    fileName = "img_" + DateTime.Now.Ticks + ".png";
-                                    byte[] imageBytes = Convert.FromBase64String(p.HinhAnhBase64);
-                                    File.WriteAllBytes(Path.Combine(Application.StartupPath, fileName), imageBytes);
-                                }
-
-                                string sqlUser = "INSERT INTO NguoiDung (HoVaTen, QuyenHan) VALUES (@name, 'Thành viên'); SELECT last_insert_rowid();";
-                                long userId = 0;
-                                using (var cmdUser = new SQLiteCommand(sqlUser, conn))
-                                {
-                                    cmdUser.Parameters.AddWithValue("@name", p.NguoiDongGop ?? "Người dùng ẩn danh");
-                                    userId = (long)cmdUser.ExecuteScalar();
-                                }
-
-                                string sqlFood = "INSERT INTO MonAn (TenMonAn, HinhAnh, IDNCC, ThoiGian) VALUES (@food, @img, @idncc, @time)";
-                                using (var cmdFood = new SQLiteCommand(sqlFood, conn))
-                                {
-                                    cmdFood.Parameters.AddWithValue("@food", p.TenMonAn?.Trim() ?? "");
-                                    cmdFood.Parameters.AddWithValue("@img", fileName);
-                                    cmdFood.Parameters.AddWithValue("@idncc", userId);
-                                    cmdFood.Parameters.AddWithValue("@time", DateTime.Now.ToString("dd/MM/yyyy HH:mm"));
-                                    cmdFood.ExecuteNonQuery();
-                                }
-
-                                Lab03_Bai05_packet successPacket = new Lab03_Bai05_packet { Action = "SUCCESS" };
-                                byte[] successBytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(successPacket));
-                                stream.Write(successBytes, 0, successBytes.Length);
-                            }
-                            else if (p.Action == "RANDOM_ALL" || p.Action == "RANDOM_MINE")
-                            {
-                                string sql = (p.Action == "RANDOM_ALL")
-                                    ? "SELECT m.TenMonAn, m.HinhAnh, n.HoVaTen FROM MonAn m JOIN NguoiDung n ON m.IDNCC = n.IDNCC ORDER BY RANDOM() LIMIT 1"
-                                    : "SELECT m.TenMonAn, m.HinhAnh, n.HoVaTen FROM MonAn m JOIN NguoiDung n ON m.IDNCC = n.IDNCC WHERE LOWER(n.HoVaTen) = LOWER(@name) ORDER BY RANDOM() LIMIT 1";
-
-                                using (var cmd = new SQLiteCommand(sql, conn))
-                                {
-                                    if (p.Action == "RANDOM_MINE")
-                                    {
-                                        cmd.Parameters.AddWithValue("@name", p.NguoiDongGop?.Trim() ?? "");
-                                    }
-
-                                    using (var reader = cmd.ExecuteReader()) // KHAI BÁO reader ĐỂ TRÁNH LỖI CS0103
-                                    {
-                                        Lab03_Bai05_packet responsePacket = new Lab03_Bai05_packet(); // KHAI BÁO responsePacket ĐỂ TRÁNH LỖI CS0103
-
-                                        if (reader.Read())
+                                        if (count > 0)
                                         {
-                                            responsePacket.Action = "RESULT";
-                                            responsePacket.TenMonAn = reader["TenMonAn"].ToString();
-                                            responsePacket.NguoiDongGop = reader["HoVaTen"].ToString();
+                                            Lab03_Bai05_packet errPacket = new Lab03_Bai05_packet { Action = "ERROR", TenMonAn = "Món ăn này đã tồn tại trong danh sách!" };
+                                            byte[] errBytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(errPacket));
+                                            stream.Write(errBytes, 0, errBytes.Length);
+                                            stream.Flush();
 
-                                            string imgFile = reader["HinhAnh"]?.ToString();
-                                            if (!string.IsNullOrEmpty(imgFile))
+                                            Invoke(new Action(() => Rtb_log.AppendText($"Từ chối món trùng: {p.TenMonAn}\n")));
+                                            break;
+                                        }
+                                    }
+
+                                    string tenNguoiDung = string.IsNullOrWhiteSpace(p.NguoiDongGop) ? "Quản lý quán" : p.NguoiDongGop;
+                                    Invoke(new Action(() => Rtb_log.AppendText($"Yêu cầu THÊM MÓN từ {tenNguoiDung} (IP: {clientIP})\n")));
+
+                                    string fileName = "";
+                                    if (!string.IsNullOrEmpty(p.HinhAnhBase64))
+                                    {
+                                        fileName = "img_" + DateTime.Now.Ticks + ".png";
+                                        byte[] imageBytes = Convert.FromBase64String(p.HinhAnhBase64);
+                                        File.WriteAllBytes(Path.Combine(Application.StartupPath, fileName), imageBytes);
+                                    }
+
+                                    string sqlUser = "INSERT INTO NguoiDung (HoVaTen, QuyenHan) VALUES (@name, 'Thành viên'); SELECT last_insert_rowid();";
+                                    long userId = 0;
+                                    using (var cmdUser = new SQLiteCommand(sqlUser, conn))
+                                    {
+                                        cmdUser.Parameters.AddWithValue("@name", p.NguoiDongGop ?? "Người dùng ẩn danh");
+                                        userId = (long)cmdUser.ExecuteScalar();
+                                    }
+
+                                    string sqlFood = "INSERT INTO MonAn (TenMonAn, HinhAnh, IDNCC, ThoiGian) VALUES (@food, @img, @idncc, @time)";
+                                    using (var cmdFood = new SQLiteCommand(sqlFood, conn))
+                                    {
+                                        cmdFood.Parameters.AddWithValue("@food", p.TenMonAn?.Trim() ?? "");
+                                        cmdFood.Parameters.AddWithValue("@img", fileName);
+                                        cmdFood.Parameters.AddWithValue("@idncc", userId);
+                                        cmdFood.Parameters.AddWithValue("@time", DateTime.Now.ToString("dd/MM/yyyy HH:mm"));
+                                        cmdFood.ExecuteNonQuery();
+                                    }
+
+                                    Lab03_Bai05_packet successPacket = new Lab03_Bai05_packet { Action = "SUCCESS" };
+                                    byte[] successBytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(successPacket));
+                                    stream.Write(successBytes, 0, successBytes.Length);
+                                    stream.Flush();
+                                    break;
+                                }
+                                else if (p.Action == "RANDOM_ALL" || p.Action == "RANDOM_MINE")
+                                {
+                                    string sql = (p.Action == "RANDOM_ALL")
+                                        ? "SELECT m.TenMonAn, m.HinhAnh, n.HoVaTen FROM MonAn m JOIN NguoiDung n ON m.IDNCC = n.IDNCC ORDER BY RANDOM() LIMIT 1"
+                                        : "SELECT m.TenMonAn, m.HinhAnh, n.HoVaTen FROM MonAn m JOIN NguoiDung n ON m.IDNCC = n.IDNCC WHERE LOWER(n.HoVaTen) = LOWER(@name) ORDER BY RANDOM() LIMIT 1";
+
+                                    using (var cmd = new SQLiteCommand(sql, conn))
+                                    {
+                                        if (p.Action == "RANDOM_MINE")
+                                        {
+                                            cmd.Parameters.AddWithValue("@name", p.NguoiDongGop?.Trim() ?? "");
+                                        }
+
+                                        using (var reader = cmd.ExecuteReader())
+                                        {
+                                            Lab03_Bai05_packet responsePacket = new Lab03_Bai05_packet();
+
+                                            if (reader.Read())
                                             {
-                                                // TÌM Ở BIN/DEBUG
-                                                string pathInDebug = Path.Combine(Application.StartupPath, imgFile);
-                                                // TÌM Ở RESOURCES GỐC
-                                                string pathInResources = Path.Combine(Application.StartupPath, @"..\..\..\src\Resources", imgFile);
+                                                responsePacket.Action = "RESULT";
+                                                responsePacket.TenMonAn = reader["TenMonAn"].ToString();
+                                                responsePacket.NguoiDongGop = reader["HoVaTen"].ToString();
 
-                                                if (File.Exists(pathInDebug))
+                                                string imgFile = reader["HinhAnh"]?.ToString();
+                                                if (!string.IsNullOrEmpty(imgFile))
                                                 {
-                                                    responsePacket.HinhAnhBase64 = Convert.ToBase64String(File.ReadAllBytes(pathInDebug));
-                                                }
-                                                else if (File.Exists(pathInResources))
-                                                {
-                                                    responsePacket.HinhAnhBase64 = Convert.ToBase64String(File.ReadAllBytes(pathInResources));
-                                                }
-                                                else
-                                                {
-                                                    Invoke(new Action(() => Rtb_log.AppendText($"[CẢNH BÁO] Không tìm thấy ảnh '{imgFile}' ở cả bin và Resources!\n")));
+                                                    string pathInDebug = Path.Combine(Application.StartupPath, imgFile);
+                                                    string pathInResources = Path.Combine(Application.StartupPath, @"..\..\..\src\Resources", imgFile);
+
+                                                    if (File.Exists(pathInDebug))
+                                                    {
+                                                        responsePacket.HinhAnhBase64 = Convert.ToBase64String(File.ReadAllBytes(pathInDebug));
+                                                    }
+                                                    else if (File.Exists(pathInResources))
+                                                    {
+                                                        responsePacket.HinhAnhBase64 = Convert.ToBase64String(File.ReadAllBytes(pathInResources));
+                                                    }
+                                                    else
+                                                    {
+                                                        Invoke(new Action(() => Rtb_log.AppendText($"[CẢNH BÁO] Không tìm thấy ảnh '{imgFile}'!\n")));
+                                                    }
                                                 }
                                             }
+                                            else
+                                            {
+                                                responsePacket.Action = "EMPTY";
+                                            }
+
+                                            string jsonResponse = JsonSerializer.Serialize(responsePacket);
+                                            byte[] outBuffer = Encoding.UTF8.GetBytes(jsonResponse);
+                                            stream.Write(outBuffer, 0, outBuffer.Length);
+                                            stream.Flush();
+                                            break;
                                         }
-                                        else
+                                    }
+                                }
+                                else if (p.Action == "GET_LIST")
+                                {
+                                    List<string> danhSachMon = new List<string>();
+                                    string sql = "SELECT DISTINCT TenMonAn FROM MonAn";
+                                    using (var cmd = new SQLiteCommand(sql, conn))
+                                    using (var reader = cmd.ExecuteReader())
+                                    {
+                                        while (reader.Read())
                                         {
-                                            responsePacket.Action = "EMPTY";
+                                            danhSachMon.Add(reader["TenMonAn"].ToString());
+                                        }
+                                    }
+
+                                    Lab03_Bai05_packet responsePacket = new Lab03_Bai05_packet
+                                    {
+                                        Action = "LIST_RESULT",
+                                        TenMonAn = JsonSerializer.Serialize(danhSachMon)
+                                    };
+
+                                    string jsonResponse = JsonSerializer.Serialize(responsePacket);
+                                    byte[] outBuffer = Encoding.UTF8.GetBytes(jsonResponse);
+                                    stream.Write(outBuffer, 0, outBuffer.Length);
+                                    stream.Flush();
+                                    break;
+                                }
+                                else if (p.Action == "DELETE")
+                                {
+                                    string sql = "DELETE FROM MonAn WHERE TenMonAn = @ten";
+                                    using (var cmd = new SQLiteCommand(sql, conn))
+                                    {
+                                        cmd.Parameters.AddWithValue("@ten", p.TenMonAn?.Trim() ?? "");
+                                        int rowsAffected = cmd.ExecuteNonQuery();
+
+                                        Lab03_Bai05_packet responsePacket = new Lab03_Bai05_packet
+                                        {
+                                            Action = rowsAffected > 0 ? "DELETE_SUCCESS" : "DELETE_FAIL"
+                                        };
+
+                                        if (rowsAffected > 0)
+                                        {
+                                            Invoke(new Action(() => Rtb_log.AppendText($"Đã xóa món: {p.TenMonAn}\n")));
                                         }
 
                                         string jsonResponse = JsonSerializer.Serialize(responsePacket);
                                         byte[] outBuffer = Encoding.UTF8.GetBytes(jsonResponse);
                                         stream.Write(outBuffer, 0, outBuffer.Length);
+                                        stream.Flush();
+                                        break;
                                     }
                                 }
-                            }
-                            else if (p.Action == "GET_LIST")
-                            {
-                                List<string> danhSachMon = new List<string>();
-                                string sql = "SELECT DISTINCT TenMonAn FROM MonAn";
-                                using (var cmd = new SQLiteCommand(sql, conn))
-                                using (var reader = cmd.ExecuteReader())
+                                else if (p.Action == "GET_ALL_DETAILS")
                                 {
-                                    while (reader.Read())
-                                    {
-                                        danhSachMon.Add(reader["TenMonAn"].ToString());
-                                    }
-                                }
+                                    var listDetails = new List<object>();
+                                    string sql = "SELECT m.TenMonAn, n.HoVaTen, m.ThoiGian FROM MonAn m JOIN NguoiDung n ON m.IDNCC = n.IDNCC";
 
-                                Lab03_Bai05_packet responsePacket = new Lab03_Bai05_packet
-                                {
-                                    Action = "LIST_RESULT",
-                                    TenMonAn = JsonSerializer.Serialize(danhSachMon)
-                                };
-
-                                string jsonResponse = JsonSerializer.Serialize(responsePacket);
-                                byte[] outBuffer = Encoding.UTF8.GetBytes(jsonResponse);
-                                stream.Write(outBuffer, 0, outBuffer.Length);
-                            }
-                            else if (p.Action == "DELETE")
-                            {
-                                string sql = "DELETE FROM MonAn WHERE TenMonAn = @ten";
-                                using (var cmd = new SQLiteCommand(sql, conn))
-                                {
-                                    cmd.Parameters.AddWithValue("@ten", p.TenMonAn?.Trim() ?? "");
-                                    int rowsAffected = cmd.ExecuteNonQuery();
-
-                                    Lab03_Bai05_packet responsePacket = new Lab03_Bai05_packet();
-                                    if (rowsAffected > 0)
+                                    using (var cmd = new SQLiteCommand(sql, conn))
+                                    using (var reader = cmd.ExecuteReader())
                                     {
-                                        responsePacket.Action = "DELETE_SUCCESS";
-                                        Invoke(new Action(() => Rtb_log.AppendText($"Đã xóa món: {p.TenMonAn}\n")));
+                                        int stt = 1;
+                                        while (reader.Read())
+                                        {
+                                            listDetails.Add(new
+                                            {
+                                                STT = stt++,
+                                                NguoiDongGop = reader["HoVaTen"].ToString(),
+                                                TenMonAn = reader["TenMonAn"].ToString(),
+                                                ThoiGian = reader["ThoiGian"].ToString()
+                                            });
+                                        }
                                     }
-                                    else
+
+                                    Lab03_Bai05_packet responsePacket = new Lab03_Bai05_packet
                                     {
-                                        responsePacket.Action = "DELETE_FAIL";
-                                    }
+                                        Action = "DETAILS_RESULT",
+                                        TenMonAn = JsonSerializer.Serialize(listDetails)
+                                    };
 
                                     string jsonResponse = JsonSerializer.Serialize(responsePacket);
                                     byte[] outBuffer = Encoding.UTF8.GetBytes(jsonResponse);
                                     stream.Write(outBuffer, 0, outBuffer.Length);
+                                    stream.Flush();
+                                    break;
                                 }
-                            }
-                            else if (p.Action == "GET_ALL_DETAILS")
-                            {
-                                var listDetails = new List<object>();
-                                string sql = "SELECT m.TenMonAn, n.HoVaTen, m.ThoiGian FROM MonAn m JOIN NguoiDung n ON m.IDNCC = n.IDNCC";
-
-                                using (var cmd = new SQLiteCommand(sql, conn))
-                                using (var reader = cmd.ExecuteReader())
-                                {
-                                    int stt = 1;
-                                    while (reader.Read())
-                                    {
-                                        listDetails.Add(new
-                                        {
-                                            STT = stt++,
-                                            NguoiDongGop = reader["HoVaTen"].ToString(),
-                                            TenMonAn = reader["TenMonAn"].ToString(),
-                                            ThoiGian = reader["ThoiGian"].ToString()
-                                        });
-                                    }
-                                }
-
-                                Lab03_Bai05_packet responsePacket = new Lab03_Bai05_packet
-                                {
-                                    Action = "DETAILS_RESULT",
-                                    TenMonAn = JsonSerializer.Serialize(listDetails)
-                                };
-
-                                string jsonResponse = JsonSerializer.Serialize(responsePacket);
-                                byte[] outBuffer = Encoding.UTF8.GetBytes(jsonResponse);
-                                stream.Write(outBuffer, 0, outBuffer.Length);
                             }
                         }
                     }
                 }
             }
-            catch
+            catch (Exception ex)
             {
+                Invoke(new Action(() => Rtb_log.AppendText($"[Lỗi xử lý]: {ex.Message}\n")));
             }
             finally
             {

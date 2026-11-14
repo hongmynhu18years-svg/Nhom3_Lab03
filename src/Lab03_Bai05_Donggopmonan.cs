@@ -1,5 +1,4 @@
-﻿
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Net.Sockets;
@@ -17,22 +16,18 @@ namespace LAB03
         // CẤU HÌNH SERVER
         // ==========================================
 
-        private const string SERVER_IP = "10.139.209.54";
         private const int SERVER_PORT = 8888;
-
         private const int TIMEOUT_SECONDS = 30;
         private const int MAX_RESPONSE_SIZE = 50 * 1024 * 1024;
 
         private string duongDanAnhGoc = "";
-
-        // Tạo một biến để lưu IP được truyền từ Form chính sang
         private string serverIP;
 
-        // SỬA HÀM KHỞI TẠO: Nhận chuỗi IP từ bên ngoài vào
+        // Nhận chuỗi IP từ Form chính truyền sang
         public Lab03_Bai05_Donggopmonan(string ip)
         {
             InitializeComponent();
-            this.serverIP = ip; // Lưu lại để dùng cho các hàm bên dưới
+            this.serverIP = ip;
         }
 
         // ==========================================
@@ -43,9 +38,7 @@ namespace LAB03
         {
             using (OpenFileDialog openFile = new OpenFileDialog())
             {
-                openFile.Filter =
-                    "Image Files|*.jpg;*.jpeg;*.png;*.gif;*.bmp";
-
+                openFile.Filter = "Image Files|*.jpg;*.jpeg;*.png;*.gif;*.bmp";
                 openFile.Title = "Chọn hình ảnh món ăn";
 
                 if (openFile.ShowDialog() == DialogResult.OK)
@@ -63,92 +56,51 @@ namespace LAB03
         }
 
         // ==========================================
-        // HÀM GỬI VÀ NHẬN JSON QUA TCP
+        // HÀM GỬI VÀ NHẬN JSON QUA TCP (DÙNG IP ĐỘNG)
         // ==========================================
 
-        private async Task<Lab03_Bai05_packet> SendPacketAsync(
-            Lab03_Bai05_packet packet)
+        private async Task<Lab03_Bai05_packet> SendPacketAsync(Lab03_Bai05_packet packet)
         {
-            using (CancellationTokenSource cts =
-                   new CancellationTokenSource(
-                       TimeSpan.FromSeconds(TIMEOUT_SECONDS)))
+            using (CancellationTokenSource cts = new CancellationTokenSource(TimeSpan.FromSeconds(TIMEOUT_SECONDS)))
             using (TcpClient client = new TcpClient())
             {
-                // Kết nối đến Server
-                await client.ConnectAsync(
-                    SERVER_IP,
-                    SERVER_PORT,
-                    cts.Token
-                );
+                await client.ConnectAsync(this.serverIP, SERVER_PORT, cts.Token);
 
                 using (NetworkStream stream = client.GetStream())
                 {
-                    // Chuyển đối tượng thành JSON
                     string json = JsonSerializer.Serialize(packet);
+                    byte[] requestData = Encoding.UTF8.GetBytes(json);
 
-                    byte[] requestData =
-                        Encoding.UTF8.GetBytes(json);
-
-                    // Gửi dữ liệu
-                    await stream.WriteAsync(
-                        requestData.AsMemory(),
-                        cts.Token
-                    );
-
+                    await stream.WriteAsync(requestData.AsMemory(), cts.Token);
                     await stream.FlushAsync(cts.Token);
 
-                    // Báo Server đã gửi xong dữ liệu
                     client.Client.Shutdown(SocketShutdown.Send);
 
-                    // Nhận toàn bộ phản hồi từ Server
                     using (MemoryStream memoryStream = new MemoryStream())
                     {
                         byte[] buffer = new byte[8192];
-
                         int bytesRead;
 
-                        while ((bytesRead = await stream.ReadAsync(
-                            buffer.AsMemory(),
-                            cts.Token)) > 0)
+                        while ((bytesRead = await stream.ReadAsync(buffer.AsMemory(), cts.Token)) > 0)
                         {
-                            if (memoryStream.Length + bytesRead >
-                                MAX_RESPONSE_SIZE)
+                            if (memoryStream.Length + bytesRead > MAX_RESPONSE_SIZE)
                             {
-                                throw new Exception(
-                                    "Dữ liệu phản hồi vượt quá giới hạn cho phép."
-                                );
+                                throw new Exception("Dữ liệu phản hồi vượt quá giới hạn cho phép.");
                             }
-
-                            memoryStream.Write(
-                                buffer,
-                                0,
-                                bytesRead
-                            );
+                            memoryStream.Write(buffer, 0, bytesRead);
                         }
 
                         if (memoryStream.Length == 0)
                         {
-                            throw new Exception(
-                                "Server không gửi dữ liệu phản hồi."
-                            );
+                            throw new Exception("Server không gửi dữ liệu phản hồi.");
                         }
 
-                        string jsonResponse =
-                            Encoding.UTF8.GetString(
-                                memoryStream.ToArray()
-                            );
-
-                        // Chuyển JSON thành đối tượng
-                        Lab03_Bai05_packet? response =
-                            JsonSerializer.Deserialize<Lab03_Bai05_packet>(
-                                jsonResponse
-                            );
+                        string jsonResponse = Encoding.UTF8.GetString(memoryStream.ToArray());
+                        Lab03_Bai05_packet? response = JsonSerializer.Deserialize<Lab03_Bai05_packet>(jsonResponse);
 
                         if (response == null)
                         {
-                            throw new Exception(
-                                "Không thể đọc dữ liệu phản hồi từ Server."
-                            );
+                            throw new Exception("Không thể đọc dữ liệu phản hồi từ Server.");
                         }
 
                         return response;
@@ -163,10 +115,8 @@ namespace LAB03
 
         private async void send_Click(object sender, EventArgs e)
         {
-            if (string.IsNullOrWhiteSpace(
-                txt_TenNguoiDongGop.Text) ||
-                string.IsNullOrWhiteSpace(
-                txt_TenMonAnDongGop.Text))
+            if (string.IsNullOrWhiteSpace(txt_TenNguoiDongGop.Text) ||
+                string.IsNullOrWhiteSpace(txt_TenMonAnDongGop.Text))
             {
                 MessageBox.Show(
                     "Vui lòng nhập đủ tên người và tên món!",
@@ -174,50 +124,33 @@ namespace LAB03
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Warning
                 );
-
                 return;
             }
 
             Button? btnSend = sender as Button;
-
             if (btnSend != null)
                 btnSend.Enabled = false;
 
             try
             {
-                // Chuyển hình ảnh sang Base64
                 string base64Image = "";
 
-                if (!string.IsNullOrEmpty(duongDanAnhGoc) &&
-                    File.Exists(duongDanAnhGoc))
+                if (!string.IsNullOrEmpty(duongDanAnhGoc) && File.Exists(duongDanAnhGoc))
                 {
-                    byte[] imageArray =
-                        await File.ReadAllBytesAsync(duongDanAnhGoc);
-
-                    base64Image =
-                        Convert.ToBase64String(imageArray);
+                    byte[] imageArray = await File.ReadAllBytesAsync(duongDanAnhGoc);
+                    base64Image = Convert.ToBase64String(imageArray);
                 }
 
-                // Tạo gói tin đóng góp
-                Lab03_Bai05_packet packet =
-                    new Lab03_Bai05_packet
-                    {
-                        Action = "ADD",
+                Lab03_Bai05_packet packet = new Lab03_Bai05_packet
+                {
+                    Action = "ADD",
+                    TenMonAn = txt_TenMonAnDongGop.Text.Trim(),
+                    NguoiDongGop = txt_TenNguoiDongGop.Text.Trim(),
+                    HinhAnhBase64 = base64Image
+                };
 
-                        TenMonAn =
-                            txt_TenMonAnDongGop.Text.Trim(),
+                Lab03_Bai05_packet response = await SendPacketAsync(packet);
 
-                        NguoiDongGop =
-                            txt_TenNguoiDongGop.Text.Trim(),
-
-                        HinhAnhBase64 = base64Image
-                    };
-
-                // Gửi đến Server và nhận phản hồi
-                Lab03_Bai05_packet response =
-                    await SendPacketAsync(packet);
-
-                // Kiểm tra kết quả
                 if (response.Action == "ERROR")
                 {
                     MessageBox.Show(
@@ -226,11 +159,9 @@ namespace LAB03
                         MessageBoxButtons.OK,
                         MessageBoxIcon.Warning
                     );
-
                     return;
                 }
 
-                // Thông báo thành công
                 MessageBox.Show(
                     "Đã gửi đóng góp tới Server thành công!",
                     "Thông báo",
@@ -238,13 +169,10 @@ namespace LAB03
                     MessageBoxIcon.Information
                 );
 
-                // Xóa dữ liệu sau khi gửi thành công
                 txt_TenNguoiDongGop.Clear();
                 txt_TenMonAnDongGop.Clear();
-
                 duongDanAnhGoc = "";
 
-                // Cập nhật danh sách đóng góp
                 await LoadDanhSachAsync();
             }
             catch (OperationCanceledException)
@@ -259,8 +187,7 @@ namespace LAB03
             catch (Exception ex)
             {
                 MessageBox.Show(
-                    "Không thể gửi đóng góp đến Server.\n\nLỗi: "
-                    + ex.Message,
+                    "Không thể gửi đóng góp đến Server.\n\nLỗi: " + ex.Message,
                     "Lỗi kết nối",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Error
@@ -281,73 +208,48 @@ namespace LAB03
         {
             try
             {
-                // Tạo yêu cầu lấy danh sách đóng góp
-                Lab03_Bai05_packet packet =
-                    new Lab03_Bai05_packet
-                    {
-                        Action = "GET_ALL_DETAILS"
-                    };
+                Lab03_Bai05_packet packet = new Lab03_Bai05_packet
+                {
+                    Action = "GET_ALL_DETAILS"
+                };
 
-                // Gửi yêu cầu đến Server
-                Lab03_Bai05_packet response =
-                    await SendPacketAsync(packet);
+                Lab03_Bai05_packet response = await SendPacketAsync(packet);
 
-                // Kiểm tra phản hồi lỗi
                 if (response.Action == "ERROR")
                 {
                     throw new Exception(response.TenMonAn);
                 }
 
-                // Kiểm tra loại phản hồi
                 if (response.Action != "DETAILS_RESULT")
                 {
-                    throw new Exception(
-                        "Server trả về dữ liệu không hợp lệ."
-                    );
+                    throw new Exception("Server trả về dữ liệu không hợp lệ.");
                 }
 
-                // Nếu danh sách rỗng
                 if (string.IsNullOrWhiteSpace(response.TenMonAn))
                 {
                     listView1.Items.Clear();
                     return;
                 }
 
-                // Phân tích JSON danh sách
-                using (JsonDocument doc =
-                    JsonDocument.Parse(response.TenMonAn))
+                using (JsonDocument doc = JsonDocument.Parse(response.TenMonAn))
                 {
                     JsonElement root = doc.RootElement;
 
                     if (root.ValueKind != JsonValueKind.Array)
                     {
-                        throw new Exception(
-                            "Dữ liệu danh sách không đúng định dạng."
-                        );
+                        throw new Exception("Dữ liệu danh sách không đúng định dạng.");
                     }
 
-                    List<ListViewItem> danhSach =
-                        new List<ListViewItem>();
+                    List<ListViewItem> danhSach = new List<ListViewItem>();
 
                     foreach (JsonElement element in root.EnumerateArray())
                     {
-                        // Lấy dữ liệu từng món ăn
-                        string stt =
-                            GetJsonValue(element, "STT");
+                        string stt = GetJsonValue(element, "STT");
+                        string nguoi = GetJsonValue(element, "NguoiDongGop");
+                        string mon = GetJsonValue(element, "TenMonAn");
+                        string time = GetJsonValue(element, "ThoiGian");
 
-                        string nguoi =
-                            GetJsonValue(element, "NguoiDongGop");
-
-                        string mon =
-                            GetJsonValue(element, "TenMonAn");
-
-                        string time =
-                            GetJsonValue(element, "ThoiGian");
-
-                        // Tạo dòng ListView
-                        ListViewItem item =
-                            new ListViewItem(stt);
-
+                        ListViewItem item = new ListViewItem(stt);
                         item.SubItems.Add(nguoi);
                         item.SubItems.Add(mon);
                         item.SubItems.Add(time);
@@ -355,18 +257,12 @@ namespace LAB03
                         danhSach.Add(item);
                     }
 
-                    // Cập nhật ListView
                     listView1.BeginUpdate();
-
                     try
                     {
                         listView1.Items.Clear();
-
                         listView1.View = View.Details;
-
-                        listView1.Items.AddRange(
-                            danhSach.ToArray()
-                        );
+                        listView1.Items.AddRange(danhSach.ToArray());
                     }
                     finally
                     {
@@ -386,8 +282,7 @@ namespace LAB03
             catch (Exception ex)
             {
                 MessageBox.Show(
-                    "Không thể tải danh sách đóng góp.\n\nLỗi: "
-                    + ex.Message,
+                    "Không thể tải danh sách đóng góp.\n\nLỗi: " + ex.Message,
                     "Lỗi",
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Error
@@ -399,13 +294,9 @@ namespace LAB03
         // HÀM ĐỌC GIÁ TRỊ TỪ JSON
         // ==========================================
 
-        private string GetJsonValue(
-            JsonElement element,
-            string propertyName)
+        private string GetJsonValue(JsonElement element, string propertyName)
         {
-            if (!element.TryGetProperty(
-                propertyName,
-                out JsonElement value))
+            if (!element.TryGetProperty(propertyName, out JsonElement value))
             {
                 return "";
             }
@@ -417,12 +308,10 @@ namespace LAB03
         }
 
         // ==========================================
-        // CHUYỂN TAB
+        // CHUYỂN TAB & FORM LOAD
         // ==========================================
 
-        private async void tabControl1_SelectedIndexChanged(
-            object sender,
-            EventArgs e)
+        private async void tabControl1_SelectedIndexChanged(object sender, EventArgs e)
         {
             if (tabControl1.SelectedIndex == 1)
             {
@@ -430,49 +319,16 @@ namespace LAB03
             }
         }
 
-        // ==========================================
-        // FORM LOAD
-        // ==========================================
-
-        private async void Donggopmonan_Load(
-            object sender,
-            EventArgs e)
+        private async void Donggopmonan_Load(object sender, EventArgs e)
         {
             await LoadDanhSachAsync();
         }
 
-        // ==========================================
-        // CÁC EVENT KHÁC
-        // ==========================================
-
-        private void xem_danh_gia_Click(
-            object sender, EventArgs e)
-        {
-        }
-
-        private void tabPage1_Click(
-            object sender, EventArgs e)
-        {
-        }
-
-        private void TenNguoiDongGop_Click(
-            object sender, EventArgs e)
-        {
-        }
-
-        private void txt_TenNguoiDongGop_TextChanged(
-            object sender, EventArgs e)
-        {
-        }
-
-        private void TenMonAnDongGop_Click(
-            object sender, EventArgs e)
-        {
-        }
-
-        private void txt_TenMonAnDongGop_TextChanged(
-            object sender, EventArgs e)
-        {
-        }
+        private void xem_danh_gia_Click(object sender, EventArgs e) { }
+        private void tabPage1_Click(object sender, EventArgs e) { }
+        private void TenNguoiDongGop_Click(object sender, EventArgs e) { }
+        private void txt_TenNguoiDongGop_TextChanged(object sender, EventArgs e) { }
+        private void TenMonAnDongGop_Click(object sender, EventArgs e) { }
+        private void txt_TenMonAnDongGop_TextChanged(object sender, EventArgs e) { }
     }
 }
